@@ -15,6 +15,10 @@ const MAX_PITCH = Math.PI / 2 - 0.08;
 const TARGET_WORLD_HEIGHT = 18;
 const SURFACE_RAY_HEIGHT = 40;
 const SURFACE_MAX_DROP = 80;
+const MAX_STEP_UP = 0.45;
+const MAX_STEP_DOWN = 1.4;
+const JUMP_VELOCITY = 4.2;
+const GRAVITY = 12;
 const START_POSITION = new THREE.Vector3(0, CAMERA_HEIGHT, 8);
 
 const app = document.querySelector("#app");
@@ -145,6 +149,8 @@ let groundLevel = 0;
 let yaw = 0;
 let pitch = 0;
 let isPointerLocked = false;
+let verticalVelocity = 0;
+let isGrounded = true;
 
 function setStatus(message, hidden = false) {
   status.textContent = message;
@@ -176,7 +182,7 @@ function isWalkableHit(hit) {
   return hit.face.normal.y > 0.45 && !isWaterLikeMaterial(material);
 }
 
-function sampleSurfaceHeight(x, z, fallback = groundLevel) {
+function sampleSurfaceHeight(x, z, fallback = groundLevel, currentHeight = null) {
   if (walkableMeshes.length === 0) {
     return fallback;
   }
@@ -186,7 +192,19 @@ function sampleSurfaceHeight(x, z, fallback = groundLevel) {
   raycaster.far = SURFACE_MAX_DROP;
 
   const hits = raycaster.intersectObjects(walkableMeshes, false);
-  const surfaceHit = hits.find(isWalkableHit);
+  const surfaceHit = hits.find((hit) => {
+    if (!isWalkableHit(hit)) {
+      return false;
+    }
+
+    if (currentHeight === null) {
+      return true;
+    }
+
+    const step = hit.point.y - currentHeight;
+    return step <= MAX_STEP_UP && step >= -MAX_STEP_DOWN;
+  });
+
   return surfaceHit ? surfaceHit.point.y : fallback;
 }
 
@@ -221,6 +239,13 @@ function handleKey(event, pressed) {
     case "KeyD":
       moveState.right = pressed;
       break;
+    case "Space":
+      if (pressed && isGrounded) {
+        verticalVelocity = JUMP_VELOCITY;
+        isGrounded = false;
+      }
+      event.preventDefault();
+      break;
     default:
       break;
   }
@@ -231,6 +256,7 @@ function resetMovement() {
   moveState.backward = false;
   moveState.left = false;
   moveState.right = false;
+  verticalVelocity = 0;
 }
 
 document.addEventListener("keydown", (event) => handleKey(event, true));
@@ -290,21 +316,33 @@ function fitModel(root) {
     new THREE.Vector2(0, finalSize.z * 0.12),
     new THREE.Vector2(-finalSize.x * 0.12, finalSize.z * 0.08),
     new THREE.Vector2(0, 0),
+    new THREE.Vector2(finalSize.x * 0.18, -finalSize.z * 0.08),
+    new THREE.Vector2(-finalSize.x * 0.18, -finalSize.z * 0.12),
+    new THREE.Vector2(0, -finalSize.z * 0.18),
   ];
 
-  const spawnPoint = spawnCandidates.find((candidate) => {
-    const y = sampleSurfaceHeight(candidate.x, candidate.y, Number.NEGATIVE_INFINITY);
-    if (!Number.isFinite(y)) {
-      return false;
+  let spawnPoint = null;
+  for (const candidate of spawnCandidates) {
+    const surfaceY = sampleSurfaceHeight(candidate.x, candidate.y, Number.NaN, null);
+    if (!Number.isFinite(surfaceY)) {
+      continue;
     }
-    candidate.surfaceY = y;
-    return true;
-  }) || spawnCandidates[0];
 
-  groundLevel = Number.isFinite(spawnPoint.surfaceY) ? spawnPoint.surfaceY : 0;
+    if (!spawnPoint || surfaceY < spawnPoint.surfaceY) {
+      spawnPoint = { x: candidate.x, y: candidate.y, surfaceY };
+    }
+  }
+
+  if (!spawnPoint) {
+    spawnPoint = { x: 0, y: 0, surfaceY: 0 };
+  }
+
+  groundLevel = spawnPoint.surfaceY;
   cameraAnchor.set(spawnPoint.x, groundLevel + CAMERA_HEIGHT, spawnPoint.y);
   yaw = Math.PI;
   pitch = -0.06;
+  verticalVelocity = 0;
+  isGrounded = true;
   syncCameraTransform();
 }
 
@@ -368,17 +406,43 @@ function updateMovement(delta) {
     Number(moveState.backward) - Number(moveState.forward),
   );
 
-  if (movement.lengthSq() === 0) {
-    cameraAnchor.y = groundLevel + CAMERA_HEIGHT;
-    return;
+  if (movement.lengthSq() > 0) {
+    movement.normalize();
+    movement.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+
+    const nextPosition = cameraAnchor.clone().addScaledVector(movement, WALK_SPEED * delta);
+    const nextGroundLevel = sampleSurfaceHeight(
+      nextPosition.x,
+      nextPosition.z,
+      Number.NaN,
+      isGrounded ? groundLevel : null,
+    );
+
+    if (Number.isFinite(nextGroundLevel)) {
+      cameraAnchor.copy(nextPosition);
+      if (isGrounded) {
+        groundLevel = nextGroundLevel;
+      }
+    }
   }
 
-  movement.normalize();
-  movement.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+  if (!isGrounded) {
+    verticalVelocity -= GRAVITY * delta;
+    cameraAnchor.y += verticalVelocity * delta;
 
-  cameraAnchor.addScaledVector(movement, WALK_SPEED * delta);
-  groundLevel = sampleSurfaceHeight(cameraAnchor.x, cameraAnchor.z, groundLevel);
-  cameraAnchor.y = groundLevel + CAMERA_HEIGHT;
+    const landingHeight = sampleSurfaceHeight(cameraAnchor.x, cameraAnchor.z, Number.NaN, null);
+    const minCameraHeight = landingHeight + CAMERA_HEIGHT;
+
+    if (Number.isFinite(landingHeight) && cameraAnchor.y <= minCameraHeight) {
+      groundLevel = landingHeight;
+      cameraAnchor.y = minCameraHeight;
+      verticalVelocity = 0;
+      isGrounded = true;
+    }
+  } else {
+    cameraAnchor.y = groundLevel + CAMERA_HEIGHT;
+  }
+
   syncCameraTransform();
 }
 
