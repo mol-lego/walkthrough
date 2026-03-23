@@ -28,3 +28,22 @@ npm run dev
 
 - `venice.glb` は約 24MB あり、初回読み込みに少し時間がかかる可能性があります
 - まずは自由移動の試作で、将来的にレール型ウォークスルーへ切り替えやすいよう、移動処理は `src/main.js` に分離しています
+- 歩ける面は [`src/walkable-surfaces.js`](/Users/mamoru/github/walkthrough/src/walkable-surfaces.js) で追加できます
+
+## 歩行面の定義
+
+`src/walkable-surfaces.js` では、モデル全体の幅・奥行きに対する相対値で矩形の歩行面を定義できます。
+
+```js
+{
+  id: "canal-main",
+  type: "rect",
+  x: 0.1,     // 中心からの相対位置
+  z: -0.05,   // 中心からの相対位置
+  width: 0.3, // モデル幅に対する比率
+  depth: 0.12,// モデル奥行きに対する比率
+  y: 0.8      // ワールド座標の高さ
+}
+```
+
+まずは `perimeter-base` のような大きな底面を置き、その上で「運河」「路地」「広場」を矩形で足していく運用を想定しています。

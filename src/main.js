@@ -7,6 +7,7 @@ import { SSAOPass } from "three/examples/jsm/postprocessing/SSAOPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { Sky } from "three/examples/jsm/objects/Sky.js";
+import { WALKABLE_SURFACE_DEFS } from "./walkable-surfaces.js";
 
 const CAMERA_HEIGHT = 2;
 const WALK_SPEED = 4;
@@ -19,6 +20,7 @@ const MAX_STEP_UP = 0.45;
 const MAX_STEP_DOWN = 1.4;
 const JUMP_VELOCITY = 4.2;
 const GRAVITY = 12;
+const MIN_WALKABLE_HEIGHT = 0.55;
 const START_POSITION = new THREE.Vector3(0, CAMERA_HEIGHT, 8);
 
 const app = document.querySelector("#app");
@@ -142,8 +144,10 @@ const movement = new THREE.Vector3();
 const raycaster = new THREE.Raycaster();
 const down = new THREE.Vector3(0, -1, 0);
 const surfaceProbe = new THREE.Vector3();
+const materialHsl = { h: 0, s: 0, l: 0 };
 let modelRoot;
 let walkableMeshes = [];
+let authoredSurfaces = [];
 
 let groundLevel = 0;
 let yaw = 0;
@@ -177,12 +181,73 @@ function isWaterLikeMaterial(material) {
   return b > r * 1.05 && g > r * 1.02;
 }
 
+function isRoofLikeMaterial(material) {
+  if (!material || !material.color) {
+    return false;
+  }
+
+  material.color.getHSL(materialHsl);
+  const isWarmRoof =
+    (materialHsl.h > 0.04 && materialHsl.h < 0.13 && materialHsl.s > 0.45 && materialHsl.l < 0.5) ||
+    (materialHsl.h > 0.01 && materialHsl.h < 0.08 && materialHsl.s > 0.35 && materialHsl.l < 0.42);
+  const isDarkGreenRoof =
+    materialHsl.h > 0.22 && materialHsl.h < 0.42 && materialHsl.s > 0.3 && materialHsl.l < 0.38;
+
+  return isWarmRoof || isDarkGreenRoof;
+}
+
 function isWalkableHit(hit) {
   const material = Array.isArray(hit.object.material) ? hit.object.material[0] : hit.object.material;
-  return hit.face.normal.y > 0.45 && !isWaterLikeMaterial(material);
+  return (
+    hit.point.y >= MIN_WALKABLE_HEIGHT &&
+    hit.face.normal.y > 0.78 &&
+    !isWaterLikeMaterial(material) &&
+    !isRoofLikeMaterial(material)
+  );
+}
+
+function buildAuthoredSurfaces(size) {
+  authoredSurfaces = WALKABLE_SURFACE_DEFS
+    .filter((surface) => surface.type === "rect")
+    .map((surface) => ({
+      ...surface,
+      minX: surface.x * size.x - (surface.width * size.x) / 2,
+      maxX: surface.x * size.x + (surface.width * size.x) / 2,
+      minZ: surface.z * size.z - (surface.depth * size.z) / 2,
+      maxZ: surface.z * size.z + (surface.depth * size.z) / 2,
+    }));
+}
+
+function sampleAuthoredSurfaceHeight(x, z, fallback = Number.NaN, currentHeight = null) {
+  let matchedHeight = Number.NaN;
+
+  for (const surface of authoredSurfaces) {
+    const containsPoint = x >= surface.minX && x <= surface.maxX && z >= surface.minZ && z <= surface.maxZ;
+    if (!containsPoint) {
+      continue;
+    }
+
+    if (currentHeight !== null) {
+      const step = surface.y - currentHeight;
+      if (step > MAX_STEP_UP || step < -MAX_STEP_DOWN) {
+        continue;
+      }
+    }
+
+    if (!Number.isFinite(matchedHeight) || surface.y > matchedHeight) {
+      matchedHeight = surface.y;
+    }
+  }
+
+  return Number.isFinite(matchedHeight) ? matchedHeight : fallback;
 }
 
 function sampleSurfaceHeight(x, z, fallback = groundLevel, currentHeight = null) {
+  const authoredHeight = sampleAuthoredSurfaceHeight(x, z, Number.NaN, currentHeight);
+  if (Number.isFinite(authoredHeight)) {
+    return authoredHeight;
+  }
+
   if (walkableMeshes.length === 0) {
     return fallback;
   }
@@ -310,6 +375,7 @@ function fitModel(root) {
 
   const finalBox = new THREE.Box3().setFromObject(root);
   const finalSize = finalBox.getSize(new THREE.Vector3());
+  buildAuthoredSurfaces(finalSize);
   const spawnCandidates = [
     new THREE.Vector2(finalSize.x * 0.08, finalSize.z * 0.24),
     new THREE.Vector2(finalSize.x * 0.16, finalSize.z * 0.18),
