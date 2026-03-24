@@ -30,6 +30,21 @@ body {
   height: 100%;
 }
 
+.reticle {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 2;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  margin-top: -5px;
+  border: 1px solid rgba(28, 26, 22, 0.42);
+  border-radius: 999px;
+  background: rgba(249, 245, 239, 0.36);
+  pointer-events: none;
+}
+
 .hud {
   position: fixed;
   top: 20px;
@@ -39,6 +54,75 @@ body {
   gap: 4px;
   pointer-events: none;
   color: rgba(24, 22, 18, 0.82);
+}
+
+.focus-hint {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  z-index: 2;
+  min-width: 220px;
+  max-width: min(420px, calc(100vw - 40px));
+  padding: 10px 14px;
+  border: 1px solid rgba(31, 29, 24, 0.14);
+  background: rgba(249, 245, 239, 0.72);
+  color: rgba(25, 23, 19, 0.82);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-align: center;
+  transform: translateX(-50%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+
+.focus-hint--visible {
+  opacity: 1;
+}
+
+.info-panel {
+  position: fixed;
+  right: 24px;
+  top: 84px;
+  z-index: 2;
+  width: min(360px, calc(100vw - 32px));
+  padding: 16px 18px;
+  border: 1px solid rgba(31, 29, 24, 0.14);
+  background: rgba(249, 245, 239, 0.88);
+  color: #1c1a16;
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+
+.info-panel--visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.info-panel__eyebrow {
+  margin-bottom: 8px;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(28, 26, 22, 0.56);
+}
+
+.info-panel__title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.info-panel__body {
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: rgba(28, 26, 22, 0.82);
 }
 
 .hud__title {
@@ -104,4 +188,18 @@ body {
 
 .status--hidden {
   opacity: 0;
+}
+
+@media (max-width: 720px) {
+  .info-panel {
+    top: auto;
+    right: 16px;
+    left: 16px;
+    bottom: 74px;
+    width: auto;
+  }
+
+  .focus-hint {
+    bottom: 20px;
+  }
 }

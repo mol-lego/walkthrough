@@ -7,6 +7,7 @@ import { SSAOPass } from "three/examples/jsm/postprocessing/SSAOPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { Sky } from "three/examples/jsm/objects/Sky.js";
+import { POI_DEFS, WARP_SPOT_DEFS } from "./exhibit-points.js";
 import { WALKABLE_SURFACE_DEFS } from "./walkable-surfaces.js";
 
 const CAMERA_HEIGHT = 2;
@@ -29,11 +30,18 @@ app.innerHTML = `
   <canvas class="stage" aria-label="Venice walkthrough"></canvas>
   <div class="hud">
     <div class="hud__title">Venice Walkthrough</div>
-    <div class="hud__hint">Click to enter. WASD to move. Drag to look. Esc to release.</div>
+    <div class="hud__hint">Click to enter. WASD to move. Drag to look. Space to jump. F to move to scenic spots.</div>
+  </div>
+  <div class="reticle" aria-hidden="true"></div>
+  <div class="focus-hint" data-focus-hint></div>
+  <div class="info-panel" data-info-panel aria-live="polite">
+    <div class="info-panel__eyebrow" data-info-context></div>
+    <h2 class="info-panel__title" data-info-title></h2>
+    <p class="info-panel__body" data-info-body></p>
   </div>
   <div class="overlay overlay--active" data-overlay>
     <button class="overlay__button" type="button" data-enter>Enter walkthrough</button>
-    <p class="overlay__note">PC only prototype. Slow movement for quiet viewing.</p>
+    <p class="overlay__note">PC only prototype. Move at minifigure scale and find a few quiet viewpoints.</p>
   </div>
   <div class="status" data-status>Loading Venice model...</div>
 `;
@@ -42,6 +50,11 @@ const canvas = document.querySelector(".stage");
 const overlay = document.querySelector("[data-overlay]");
 const enterButton = document.querySelector("[data-enter]");
 const status = document.querySelector("[data-status]");
+const focusHint = document.querySelector("[data-focus-hint]");
+const infoPanel = document.querySelector("[data-info-panel]");
+const infoContext = document.querySelector("[data-info-context]");
+const infoTitle = document.querySelector("[data-info-title]");
+const infoBody = document.querySelector("[data-info-body]");
 
 const renderer = new THREE.WebGLRenderer({
   antialias: true,
@@ -148,6 +161,11 @@ const materialHsl = { h: 0, s: 0, l: 0 };
 let modelRoot;
 let walkableMeshes = [];
 let authoredSurfaces = [];
+let runtimePois = [];
+let runtimeWarpSpots = [];
+let activeWarpSpot = null;
+let focusedPoi = null;
+const warpSpotMarkers = [];
 
 let groundLevel = 0;
 let yaw = 0;
@@ -163,6 +181,27 @@ function setStatus(message, hidden = false) {
 
 function updateOverlayState(locked) {
   overlay.classList.toggle("overlay--active", !locked);
+}
+
+function setFocusHint(message = "", visible = false) {
+  focusHint.textContent = message;
+  focusHint.classList.toggle("focus-hint--visible", visible);
+}
+
+function renderInfoPanel() {
+  const sourcePoi = focusedPoi;
+  infoPanel.classList.toggle("info-panel--visible", Boolean(sourcePoi));
+
+  if (!sourcePoi) {
+    infoContext.textContent = "";
+    infoTitle.textContent = "";
+    infoBody.textContent = "";
+    return;
+  }
+
+  infoContext.textContent = "Point of interest";
+  infoTitle.textContent = sourcePoi.title;
+  infoBody.textContent = sourcePoi.description;
 }
 
 function syncCameraTransform() {
@@ -216,6 +255,154 @@ function buildAuthoredSurfaces(size) {
       minZ: surface.z * size.z - (surface.depth * size.z) / 2,
       maxZ: surface.z * size.z + (surface.depth * size.z) / 2,
     }));
+}
+
+function buildRuntimeExhibitPoints(size) {
+  for (const marker of warpSpotMarkers) {
+    scene.remove(marker);
+  }
+  warpSpotMarkers.length = 0;
+
+  runtimeWarpSpots = WARP_SPOT_DEFS.map((spot) => ({
+    ...spot,
+    position: new THREE.Vector3(spot.x * size.x, spot.y, spot.z * size.z),
+  }));
+
+  runtimePois = POI_DEFS.map((poi) => ({
+    ...poi,
+    position: new THREE.Vector3(poi.x * size.x, poi.y, poi.z * size.z),
+  }));
+
+  for (const spot of runtimeWarpSpots) {
+    const marker = createWarpSpotMarker(spot);
+    warpSpotMarkers.push(marker);
+    scene.add(marker);
+  }
+}
+
+function getPoiById(id) {
+  return runtimePois.find((poi) => poi.id === id) ?? null;
+}
+
+function createWarpSpotMarker(spot) {
+  const marker = new THREE.Group();
+  marker.position.copy(spot.position);
+
+  const ringGeometry = new THREE.TorusGeometry(0.9, 0.08, 12, 32);
+  const ringMaterial = new THREE.MeshStandardMaterial({
+    color: 0xff7a18,
+    emissive: 0xff4d00,
+    emissiveIntensity: 1.4,
+    roughness: 0.35,
+    metalness: 0.05,
+  });
+  const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+  ring.rotation.x = Math.PI / 2;
+  ring.position.y = 0.18;
+  marker.add(ring);
+
+  const pillarGeometry = new THREE.CylinderGeometry(0.12, 0.18, 1.6, 6);
+  const pillarMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffd166,
+    emissive: 0xff9f1c,
+    emissiveIntensity: 0.8,
+    roughness: 0.45,
+    metalness: 0.02,
+  });
+  const pillar = new THREE.Mesh(pillarGeometry, pillarMaterial);
+  pillar.position.y = 0.8;
+  marker.add(pillar);
+
+  const beaconGeometry = new THREE.SphereGeometry(0.22, 16, 16);
+  const beaconMaterial = new THREE.MeshStandardMaterial({
+    color: 0xfff3c4,
+    emissive: 0xffb703,
+    emissiveIntensity: 1.8,
+    roughness: 0.2,
+    metalness: 0.02,
+  });
+  const beacon = new THREE.Mesh(beaconGeometry, beaconMaterial);
+  beacon.position.y = 1.7;
+  marker.add(beacon);
+
+  marker.userData.baseY = spot.position.y;
+  return marker;
+}
+
+function updateExhibitState() {
+  if (!isPointerLocked) {
+    activeWarpSpot = null;
+    focusedPoi = null;
+    setFocusHint();
+    renderInfoPanel();
+    return;
+  }
+
+  const forward = new THREE.Vector3();
+  camera.getWorldDirection(forward);
+
+  let nextFocusedPoi = null;
+  let bestPoiScore = 0.86;
+  for (const poi of runtimePois) {
+    const offset = poi.position.clone().sub(camera.position);
+    const distance = offset.length();
+    if (distance > 34) {
+      continue;
+    }
+
+    const directionToPoi = offset.normalize();
+    const score = forward.dot(directionToPoi);
+    if (score > bestPoiScore) {
+      nextFocusedPoi = poi;
+      bestPoiScore = score;
+    }
+  }
+  focusedPoi = nextFocusedPoi;
+  renderInfoPanel();
+
+  let nextWarpSpot = null;
+  let bestWarpScore = 0.93;
+  for (const spot of runtimeWarpSpots) {
+    const offset = spot.position.clone().sub(camera.position);
+    const distance = offset.length();
+    if (distance > 48) {
+      continue;
+    }
+
+    const directionToSpot = offset.normalize();
+    const score = forward.dot(directionToSpot);
+    if (score > bestWarpScore) {
+      nextWarpSpot = spot;
+      bestWarpScore = score;
+    }
+  }
+  activeWarpSpot = nextWarpSpot;
+
+  if (activeWarpSpot) {
+    setFocusHint(activeWarpSpot.hint, true);
+  } else {
+    setFocusHint();
+  }
+}
+
+function warpToSpot(spot) {
+  const landingHeight = sampleSurfaceHeight(
+    spot.position.x,
+    spot.position.z,
+    spot.position.y,
+    null,
+  );
+  groundLevel = landingHeight;
+  cameraAnchor.set(
+    spot.position.x,
+    groundLevel + CAMERA_HEIGHT,
+    spot.position.z,
+  );
+  yaw = spot.yaw;
+  pitch = spot.pitch;
+  verticalVelocity = 0;
+  isGrounded = true;
+  syncCameraTransform();
 }
 
 function sampleAuthoredSurfaceHeight(x, z, fallback = Number.NaN, currentHeight = null) {
@@ -311,6 +498,11 @@ function handleKey(event, pressed) {
       }
       event.preventDefault();
       break;
+    case "KeyF":
+      if (pressed && !event.repeat && activeWarpSpot) {
+        warpToSpot(activeWarpSpot);
+      }
+      break;
     default:
       break;
   }
@@ -376,6 +568,7 @@ function fitModel(root) {
   const finalBox = new THREE.Box3().setFromObject(root);
   const finalSize = finalBox.getSize(new THREE.Vector3());
   buildAuthoredSurfaces(finalSize);
+  buildRuntimeExhibitPoints(finalSize);
   const spawnCandidates = [
     new THREE.Vector2(finalSize.x * 0.08, finalSize.z * 0.24),
     new THREE.Vector2(finalSize.x * 0.16, finalSize.z * 0.18),
@@ -516,7 +709,14 @@ function animate() {
   requestAnimationFrame(animate);
 
   const delta = Math.min(clock.getDelta(), 0.05);
+  const elapsedTime = clock.elapsedTime;
   updateMovement(delta);
+  updateExhibitState();
+
+  for (const marker of warpSpotMarkers) {
+    marker.rotation.y += delta * 0.7;
+    marker.position.y = marker.userData.baseY + 0.14 + Math.sin(elapsedTime * 2.4) * 0.08;
+  }
 
   composer.render();
 }
