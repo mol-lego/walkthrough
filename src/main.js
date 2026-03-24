@@ -8,7 +8,6 @@ import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPa
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { Sky } from "three/examples/jsm/objects/Sky.js";
 import { POI_DEFS, WARP_SPOT_DEFS } from "./exhibit-points.js";
-import { WALKABLE_SURFACE_DEFS } from "./walkable-surfaces.js";
 
 const CAMERA_HEIGHT = 2;
 const WALK_SPEED = 4;
@@ -23,6 +22,12 @@ const JUMP_VELOCITY = 4.2;
 const GRAVITY = 12;
 const MIN_WALKABLE_HEIGHT = 0.55;
 const START_POSITION = new THREE.Vector3(0, CAMERA_HEIGHT, 8);
+const MAX_RENDER_PIXEL_RATIO = 1.25;
+const ENABLE_SSAO = false;
+const ENABLE_BLOOM = false;
+const ENABLE_SHADOWS = false;
+const PLAYER_RADIUS = 0.32;
+const PLAYER_COLLISION_HEIGHT = 1.2;
 
 const app = document.querySelector("#app");
 
@@ -60,12 +65,12 @@ const renderer = new THREE.WebGLRenderer({
   antialias: true,
   canvas,
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_RENDER_PIXEL_RATIO));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.86;
-renderer.shadowMap.enabled = true;
+renderer.shadowMap.enabled = ENABLE_SHADOWS;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
@@ -74,7 +79,7 @@ scene.fog = new THREE.Fog(0xc8dced, 22, 78);
 
 const pmremGenerator = new THREE.PMREMGenerator(renderer);
 
-const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 250);
+const camera = new THREE.PerspectiveCamera(82, window.innerWidth / window.innerHeight, 0.1, 250);
 camera.position.copy(START_POSITION);
 
 const composer = new EffectComposer(renderer);
@@ -86,7 +91,9 @@ ssaoPass.kernelRadius = 14;
 ssaoPass.minDistance = 0.0008;
 ssaoPass.maxDistance = 0.03;
 ssaoPass.output = SSAOPass.OUTPUT.Default;
-composer.addPass(ssaoPass);
+if (ENABLE_SSAO) {
+  composer.addPass(ssaoPass);
+}
 
 const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
@@ -94,7 +101,9 @@ const bloomPass = new UnrealBloomPass(
   0.35,
   1.0,
 );
-composer.addPass(bloomPass);
+if (ENABLE_BLOOM) {
+  composer.addPass(bloomPass);
+}
 
 const sky = new Sky();
 sky.scale.setScalar(450000);
@@ -124,8 +133,8 @@ scene.add(hemiLight);
 
 const sunLight = new THREE.DirectionalLight(0xfff0d2, 2.6);
 sunLight.position.copy(sunDirection).multiplyScalar(40);
-sunLight.castShadow = true;
-sunLight.shadow.mapSize.set(2048, 2048);
+sunLight.castShadow = ENABLE_SHADOWS;
+sunLight.shadow.mapSize.set(1024, 1024);
 sunLight.shadow.bias = -0.00015;
 sunLight.shadow.normalBias = 0.06;
 sunLight.shadow.camera.near = 1;
@@ -159,12 +168,14 @@ const down = new THREE.Vector3(0, -1, 0);
 const surfaceProbe = new THREE.Vector3();
 const materialHsl = { h: 0, s: 0, l: 0 };
 let modelRoot;
+let collisionRoot;
 let walkableMeshes = [];
-let authoredSurfaces = [];
+let wallMeshes = [];
 let runtimePois = [];
 let runtimeWarpSpots = [];
 let activeWarpSpot = null;
 let focusedPoi = null;
+let runtimeSpawnPoint = null;
 const warpSpotMarkers = [];
 
 let groundLevel = 0;
@@ -236,6 +247,11 @@ function isRoofLikeMaterial(material) {
 }
 
 function isWalkableHit(hit) {
+  const collisionSurfaceType = hit.object.userData.surfaceType;
+  if (collisionSurfaceType === "walk" || collisionSurfaceType === "water") {
+    return hit.face.normal.y > 0.45;
+  }
+
   const material = Array.isArray(hit.object.material) ? hit.object.material[0] : hit.object.material;
   return (
     hit.point.y >= MIN_WALKABLE_HEIGHT &&
@@ -245,23 +261,15 @@ function isWalkableHit(hit) {
   );
 }
 
-function buildAuthoredSurfaces(size) {
-  authoredSurfaces = WALKABLE_SURFACE_DEFS
-    .filter((surface) => surface.type === "rect")
-    .map((surface) => ({
-      ...surface,
-      minX: surface.x * size.x - (surface.width * size.x) / 2,
-      maxX: surface.x * size.x + (surface.width * size.x) / 2,
-      minZ: surface.z * size.z - (surface.depth * size.z) / 2,
-      maxZ: surface.z * size.z + (surface.depth * size.z) / 2,
-    }));
-}
-
-function buildRuntimeExhibitPoints(size) {
+function clearWarpSpotMarkers() {
   for (const marker of warpSpotMarkers) {
     scene.remove(marker);
   }
   warpSpotMarkers.length = 0;
+}
+
+function buildRuntimeExhibitPointsFromDefs(size) {
+  clearWarpSpotMarkers();
 
   runtimeWarpSpots = WARP_SPOT_DEFS.map((spot) => ({
     ...spot,
@@ -280,8 +288,55 @@ function buildRuntimeExhibitPoints(size) {
   }
 }
 
-function getPoiById(id) {
-  return runtimePois.find((poi) => poi.id === id) ?? null;
+function buildRuntimePois(size) {
+  runtimePois = POI_DEFS.map((poi) => ({
+    ...poi,
+    position: new THREE.Vector3(poi.x * size.x, poi.y, poi.z * size.z),
+  }));
+}
+
+function getYawFromQuaternion(quaternion) {
+  const euler = new THREE.Euler().setFromQuaternion(quaternion, "YXZ");
+  return euler.y;
+}
+
+function buildCollisionExhibitPoints(root) {
+  clearWarpSpotMarkers();
+  runtimeWarpSpots = [];
+  runtimeSpawnPoint = null;
+
+  root.updateWorldMatrix(true, true);
+  root.traverse((child) => {
+    const normalizedName = child.name?.toLowerCase() ?? "";
+    if (normalizedName.startsWith("view_")) {
+      const position = child.getWorldPosition(new THREE.Vector3());
+      const quaternion = child.getWorldQuaternion(new THREE.Quaternion());
+      runtimeWarpSpots.push({
+        id: child.name,
+        title: child.name.replace(/^view_/, "").replaceAll("_", " "),
+        hint: "Scenic spot [F]",
+        position,
+        yaw: getYawFromQuaternion(quaternion),
+        pitch: -0.12,
+      });
+    }
+
+    if (normalizedName === "spawn" || normalizedName.startsWith("spawn_")) {
+      const position = child.getWorldPosition(new THREE.Vector3());
+      const quaternion = child.getWorldQuaternion(new THREE.Quaternion());
+      runtimeSpawnPoint = {
+        position,
+        yaw: getYawFromQuaternion(quaternion),
+        pitch: -0.06,
+      };
+    }
+  });
+
+  for (const spot of runtimeWarpSpots) {
+    const marker = createWarpSpotMarker(spot);
+    warpSpotMarkers.push(marker);
+    scene.add(marker);
+  }
 }
 
 function createWarpSpotMarker(spot) {
@@ -405,36 +460,7 @@ function warpToSpot(spot) {
   syncCameraTransform();
 }
 
-function sampleAuthoredSurfaceHeight(x, z, fallback = Number.NaN, currentHeight = null) {
-  let matchedHeight = Number.NaN;
-
-  for (const surface of authoredSurfaces) {
-    const containsPoint = x >= surface.minX && x <= surface.maxX && z >= surface.minZ && z <= surface.maxZ;
-    if (!containsPoint) {
-      continue;
-    }
-
-    if (currentHeight !== null) {
-      const step = surface.y - currentHeight;
-      if (step > MAX_STEP_UP || step < -MAX_STEP_DOWN) {
-        continue;
-      }
-    }
-
-    if (!Number.isFinite(matchedHeight) || surface.y > matchedHeight) {
-      matchedHeight = surface.y;
-    }
-  }
-
-  return Number.isFinite(matchedHeight) ? matchedHeight : fallback;
-}
-
 function sampleSurfaceHeight(x, z, fallback = groundLevel, currentHeight = null) {
-  const authoredHeight = sampleAuthoredSurfaceHeight(x, z, Number.NaN, currentHeight);
-  if (Number.isFinite(authoredHeight)) {
-    return authoredHeight;
-  }
-
   if (walkableMeshes.length === 0) {
     return fallback;
   }
@@ -458,6 +484,38 @@ function sampleSurfaceHeight(x, z, fallback = groundLevel, currentHeight = null)
   });
 
   return surfaceHit ? surfaceHit.point.y : fallback;
+}
+
+function collidesWithWall(fromPosition, toPosition) {
+  if (wallMeshes.length === 0) {
+    return false;
+  }
+
+  const direction = toPosition.clone().sub(fromPosition);
+  const distance = direction.length();
+  if (distance <= 0.0001) {
+    return false;
+  }
+
+  direction.normalize();
+
+  const probeHeights = [
+    fromPosition.y - CAMERA_HEIGHT + 0.35,
+    fromPosition.y - CAMERA_HEIGHT + PLAYER_COLLISION_HEIGHT,
+  ];
+
+  for (const probeY of probeHeights) {
+    const origin = new THREE.Vector3(fromPosition.x, probeY, fromPosition.z);
+    raycaster.set(origin, direction);
+    raycaster.far = distance + PLAYER_RADIUS;
+
+    const hit = raycaster.intersectObjects(wallMeshes, false)[0];
+    if (hit) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function lockPointer() {
@@ -550,7 +608,7 @@ document.addEventListener("mousemove", (event) => {
 function fitModel(root) {
   const initialBox = new THREE.Box3().setFromObject(root);
   if (initialBox.isEmpty()) {
-    return;
+    return null;
   }
 
   const initialSize = initialBox.getSize(new THREE.Vector3());
@@ -558,100 +616,142 @@ function fitModel(root) {
   root.scale.setScalar(scale);
 
   const scaledBox = new THREE.Box3().setFromObject(root);
-  const scaledSize = scaledBox.getSize(new THREE.Vector3());
   const scaledCenter = scaledBox.getCenter(new THREE.Vector3());
+  const translation = new THREE.Vector3(-scaledCenter.x, -scaledBox.min.y, -scaledCenter.z);
 
-  root.position.x -= scaledCenter.x;
-  root.position.z -= scaledCenter.z;
-  root.position.y -= scaledBox.min.y;
+  root.position.copy(translation);
 
-  const finalBox = new THREE.Box3().setFromObject(root);
+  return { scale, translation };
+}
+
+function applyModelTransform(root, transform) {
+  root.scale.setScalar(transform.scale);
+  root.position.copy(transform.translation);
+}
+
+function initializeWorldData(visualRoot, collisionScene) {
+  const transform = fitModel(visualRoot);
+  if (!transform) {
+    return;
+  }
+
+  const finalBox = new THREE.Box3().setFromObject(visualRoot);
   const finalSize = finalBox.getSize(new THREE.Vector3());
-  buildAuthoredSurfaces(finalSize);
-  buildRuntimeExhibitPoints(finalSize);
-  const spawnCandidates = [
-    new THREE.Vector2(finalSize.x * 0.08, finalSize.z * 0.24),
-    new THREE.Vector2(finalSize.x * 0.16, finalSize.z * 0.18),
-    new THREE.Vector2(0, finalSize.z * 0.12),
-    new THREE.Vector2(-finalSize.x * 0.12, finalSize.z * 0.08),
-    new THREE.Vector2(0, 0),
-    new THREE.Vector2(finalSize.x * 0.18, -finalSize.z * 0.08),
-    new THREE.Vector2(-finalSize.x * 0.18, -finalSize.z * 0.12),
-    new THREE.Vector2(0, -finalSize.z * 0.18),
-  ];
+  buildRuntimePois(finalSize);
 
-  let spawnPoint = null;
-  for (const candidate of spawnCandidates) {
-    const surfaceY = sampleSurfaceHeight(candidate.x, candidate.y, Number.NaN, null);
-    if (!Number.isFinite(surfaceY)) {
-      continue;
-    }
-
-    if (!spawnPoint || surfaceY < spawnPoint.surfaceY) {
-      spawnPoint = { x: candidate.x, y: candidate.y, surfaceY };
-    }
+  if (collisionScene) {
+    collisionRoot = collisionScene;
+    applyModelTransform(collisionRoot, transform);
+    collisionRoot.updateWorldMatrix(true, true);
+    buildCollisionExhibitPoints(collisionRoot);
+  } else {
+    buildRuntimeExhibitPointsFromDefs(finalSize);
   }
 
-  if (!spawnPoint) {
-    spawnPoint = { x: 0, y: 0, surfaceY: 0 };
+  if (runtimeSpawnPoint) {
+    const spawnHeight = sampleSurfaceHeight(
+      runtimeSpawnPoint.position.x,
+      runtimeSpawnPoint.position.z,
+      runtimeSpawnPoint.position.y,
+      null,
+    );
+    groundLevel = spawnHeight;
+    cameraAnchor.set(
+      runtimeSpawnPoint.position.x,
+      groundLevel + CAMERA_HEIGHT,
+      runtimeSpawnPoint.position.z,
+    );
+    yaw = runtimeSpawnPoint.yaw;
+    pitch = runtimeSpawnPoint.pitch;
+  } else {
+    groundLevel = 0;
+    cameraAnchor.set(0, CAMERA_HEIGHT, 0);
+    yaw = Math.PI;
+    pitch = -0.06;
   }
 
-  groundLevel = spawnPoint.surfaceY;
-  cameraAnchor.set(spawnPoint.x, groundLevel + CAMERA_HEIGHT, spawnPoint.y);
-  yaw = Math.PI;
-  pitch = -0.06;
   verticalVelocity = 0;
   isGrounded = true;
   syncCameraTransform();
 }
 
-function loadModel() {
+function loadGltf(loader, url, onProgress) {
+  return new Promise((resolve, reject) => {
+    loader.load(url, resolve, onProgress, reject);
+  });
+}
+
+async function loadModel() {
   const loader = new GLTFLoader();
-
-  loader.load(
-    "/models/venice.glb",
-    (gltf) => {
-      modelRoot = gltf.scene;
-      walkableMeshes = [];
-      modelRoot.traverse((child) => {
-        if (child.isMesh) {
-          child.castShadow = true;
-          child.receiveShadow = true;
-          child.frustumCulled = true;
-          const materials = Array.isArray(child.material) ? child.material : [child.material];
-          for (const material of materials) {
-            if (!material) {
-              continue;
-            }
-            material.envMapIntensity = isWaterLikeMaterial(material) ? 2.1 : 0.95;
-            if (isWaterLikeMaterial(material)) {
-              material.roughness = Math.min(material.roughness ?? 1, 0.08);
-              material.metalness = Math.max(material.metalness ?? 0, 0.12);
-            } else {
-              material.roughness = Math.min(Math.max(material.roughness ?? 0.85, 0.42), 0.92);
-              material.metalness = Math.max(material.metalness ?? 0, 0.02);
-            }
-            material.needsUpdate = true;
-          }
-          walkableMeshes.push(child);
+  try {
+    const [visualGltf, collisionGltf] = await Promise.all([
+      loadGltf(loader, "/models/venice.glb", (event) => {
+        if (event.total > 0) {
+          const progress = Math.round((event.loaded / event.total) * 100);
+          setStatus(`Loading Venice model... ${progress}%`);
         }
-      });
+      }),
+      loadGltf(loader, "/models/venice_collision.glb"),
+    ]);
 
-      fitModel(modelRoot);
-      scene.add(modelRoot);
-      setStatus("Click enter to begin.");
-    },
-    (event) => {
-      if (event.total > 0) {
-        const progress = Math.round((event.loaded / event.total) * 100);
-        setStatus(`Loading Venice model... ${progress}%`);
+    modelRoot = visualGltf.scene;
+    collisionRoot = collisionGltf.scene;
+
+    walkableMeshes = [];
+    wallMeshes = [];
+    modelRoot.traverse((child) => {
+      if (!child.isMesh) {
+        return;
       }
-    },
-    (error) => {
-      console.error(error);
-      setStatus("Failed to load model.");
-    },
-  );
+
+      child.castShadow = ENABLE_SHADOWS;
+      child.receiveShadow = ENABLE_SHADOWS;
+      child.frustumCulled = true;
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      for (const material of materials) {
+        if (!material) {
+          continue;
+        }
+        material.envMapIntensity = isWaterLikeMaterial(material) ? 2.1 : 0.95;
+        if (isWaterLikeMaterial(material)) {
+          material.roughness = Math.min(material.roughness ?? 1, 0.08);
+          material.metalness = Math.max(material.metalness ?? 0, 0.12);
+        } else {
+          material.roughness = Math.min(Math.max(material.roughness ?? 0.85, 0.42), 0.92);
+          material.metalness = Math.max(material.metalness ?? 0, 0.02);
+        }
+        material.needsUpdate = true;
+      }
+    });
+
+    collisionRoot.traverse((child) => {
+      if (!child.isMesh) {
+        return;
+      }
+
+      const normalizedName = child.name?.toLowerCase() ?? "";
+      if (normalizedName.startsWith("walk_")) {
+        child.userData.surfaceType = "walk";
+        walkableMeshes.push(child);
+      }
+      if (normalizedName === "water" || normalizedName.startsWith("water_")) {
+        child.userData.surfaceType = "water";
+        walkableMeshes.push(child);
+      }
+      if (normalizedName.startsWith("wall_")) {
+        wallMeshes.push(child);
+      }
+    });
+
+    initializeWorldData(modelRoot, collisionRoot);
+    scene.add(modelRoot);
+    setStatus(
+      walkableMeshes.length > 0 ? "Click enter to begin." : "Collision fallback active. Click enter to begin.",
+    );
+  } catch (error) {
+    console.error(error);
+    setStatus("Failed to load model.");
+  }
 }
 
 function updateMovement(delta) {
@@ -669,19 +769,39 @@ function updateMovement(delta) {
     movement.normalize();
     movement.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
 
-    const nextPosition = cameraAnchor.clone().addScaledVector(movement, WALK_SPEED * delta);
-    const nextGroundLevel = sampleSurfaceHeight(
-      nextPosition.x,
-      nextPosition.z,
-      Number.NaN,
-      isGrounded ? groundLevel : null,
-    );
+    const moveDistance = WALK_SPEED * delta;
+    const attemptedPositions = [
+      cameraAnchor.clone().addScaledVector(movement, moveDistance),
+      cameraAnchor.clone().addScaledVector(new THREE.Vector3(movement.x, 0, 0), moveDistance),
+      cameraAnchor.clone().addScaledVector(new THREE.Vector3(0, 0, movement.z), moveDistance),
+    ];
 
-    if (Number.isFinite(nextGroundLevel)) {
-      cameraAnchor.copy(nextPosition);
-      if (isGrounded) {
-        groundLevel = nextGroundLevel;
+    for (const attemptedPosition of attemptedPositions) {
+      const attemptedGroundLevel = sampleSurfaceHeight(
+        attemptedPosition.x,
+        attemptedPosition.z,
+        Number.NaN,
+        isGrounded ? groundLevel : null,
+      );
+
+      if (!Number.isFinite(attemptedGroundLevel)) {
+        continue;
       }
+
+      const candidatePosition = attemptedPosition.clone();
+      if (isGrounded) {
+        candidatePosition.y = attemptedGroundLevel + CAMERA_HEIGHT;
+      }
+
+      if (collidesWithWall(cameraAnchor, candidatePosition)) {
+        continue;
+      }
+
+      cameraAnchor.copy(attemptedPosition);
+      if (isGrounded) {
+        groundLevel = attemptedGroundLevel;
+      }
+      break;
     }
   }
 
@@ -724,10 +844,15 @@ function animate() {
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_RENDER_PIXEL_RATIO));
   renderer.setSize(window.innerWidth, window.innerHeight);
   composer.setSize(window.innerWidth, window.innerHeight);
-  ssaoPass.setSize(window.innerWidth, window.innerHeight);
-  bloomPass.setSize(window.innerWidth, window.innerHeight);
+  if (ENABLE_SSAO) {
+    ssaoPass.setSize(window.innerWidth, window.innerHeight);
+  }
+  if (ENABLE_BLOOM) {
+    bloomPass.setSize(window.innerWidth, window.innerHeight);
+  }
 });
 
 loadModel();
