@@ -11,6 +11,7 @@ import { POI_DEFS, WARP_SPOT_DEFS } from "./exhibit-points.js";
 
 const CAMERA_HEIGHT = 2;
 const WALK_SPEED = 4;
+const SPRINT_MULTIPLIER = 1.7;
 const DRAG_SENSITIVITY = 0.0018;
 const MAX_PITCH = Math.PI / 2 - 0.08;
 const TARGET_WORLD_HEIGHT = 18;
@@ -18,17 +19,23 @@ const SURFACE_RAY_HEIGHT = 40;
 const SURFACE_MAX_DROP = 80;
 const MAX_STEP_UP = 0.45;
 const MAX_STEP_DOWN = 1.4;
-const JUMP_VELOCITY = 4.2;
+const JUMP_VELOCITY = 4.9;
 const GRAVITY = 12;
 const MIN_WALKABLE_HEIGHT = 0.55;
 const START_POSITION = new THREE.Vector3(0, CAMERA_HEIGHT, 8);
-const MAX_RENDER_PIXEL_RATIO = 1.25;
+const MAX_RENDER_PIXEL_RATIO = 1;
 const ENABLE_SSAO = false;
 const ENABLE_BLOOM = false;
-const ENABLE_SHADOWS = false;
+const ENABLE_SHADOWS = true;
 const PLAYER_RADIUS = 0.32;
 const PLAYER_COLLISION_HEIGHT = 1.2;
 const PERF_UPDATE_INTERVAL = 250;
+const DYNAMIC_PIXEL_RATIO_MIN = 0.7;
+const DYNAMIC_PIXEL_RATIO_MAX = MAX_RENDER_PIXEL_RATIO;
+const DYNAMIC_PIXEL_RATIO_STEP = 0.1;
+const DYNAMIC_PIXEL_RATIO_UPDATE_INTERVAL = 1.5;
+const DYNAMIC_PIXEL_RATIO_LOW_FPS = 34;
+const DYNAMIC_PIXEL_RATIO_HIGH_FPS = 52;
 
 const app = document.querySelector("#app");
 
@@ -36,7 +43,7 @@ app.innerHTML = `
   <canvas class="stage" aria-label="Venice walkthrough"></canvas>
   <div class="hud">
     <div class="hud__title">Venice Walkthrough</div>
-    <div class="hud__hint">Click to enter. WASD to move. Drag to look. Space to jump. F to move to scenic spots.</div>
+    <div class="hud__hint">Click to enter. WASD to move. Shift to sprint. Drag to look. Space to jump. F to move to scenic spots.</div>
   </div>
   <div class="reticle" aria-hidden="true"></div>
   <div class="focus-hint" data-focus-hint></div>
@@ -93,18 +100,19 @@ const perfElements = {
 const renderer = new THREE.WebGLRenderer({
   antialias: true,
   canvas,
+  powerPreference: "high-performance",
 });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_RENDER_PIXEL_RATIO));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.86;
+renderer.toneMappingExposure = 0.78;
 renderer.shadowMap.enabled = ENABLE_SHADOWS;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xc8dced);
-scene.fog = new THREE.Fog(0xc8dced, 22, 78);
+scene.background = new THREE.Color(0xbdcfdf);
+scene.fog = new THREE.Fog(0xbdcfdf, 26, 92);
 
 const pmremGenerator = new THREE.PMREMGenerator(renderer);
 
@@ -140,13 +148,13 @@ scene.add(sky);
 
 const sunDirection = new THREE.Vector3();
 const elevation = THREE.MathUtils.degToRad(24);
-const azimuth = THREE.MathUtils.degToRad(205);
+const azimuth = THREE.MathUtils.degToRad(250);
 sunDirection.setFromSphericalCoords(1, Math.PI / 2 - elevation, azimuth);
 
-sky.material.uniforms.turbidity.value = 3.2;
-sky.material.uniforms.rayleigh.value = 1.45;
-sky.material.uniforms.mieCoefficient.value = 0.008;
-sky.material.uniforms.mieDirectionalG.value = 0.92;
+sky.material.uniforms.turbidity.value = 2.35;
+sky.material.uniforms.rayleigh.value = 1.1;
+sky.material.uniforms.mieCoefficient.value = 0.006;
+sky.material.uniforms.mieDirectionalG.value = 0.88;
 sky.material.uniforms.sunPosition.value.copy(sunDirection);
 
 const skyScene = new THREE.Scene();
@@ -157,30 +165,34 @@ envSky.material.uniforms.sunPosition.value.copy(sunDirection);
 skyScene.add(envSky);
 scene.environment = pmremGenerator.fromScene(skyScene).texture;
 
-const hemiLight = new THREE.HemisphereLight(0xf5f2ea, 0x596674, 1.15);
+const hemiLight = new THREE.HemisphereLight(0xf4ead8, 0x43515c, 0.78);
 scene.add(hemiLight);
 
-const sunLight = new THREE.DirectionalLight(0xfff0d2, 2.6);
+const sunLight = new THREE.DirectionalLight(0xffefcf, 3.35);
 sunLight.position.copy(sunDirection).multiplyScalar(40);
 sunLight.castShadow = ENABLE_SHADOWS;
-sunLight.shadow.mapSize.set(1024, 1024);
-sunLight.shadow.bias = -0.00015;
-sunLight.shadow.normalBias = 0.06;
+sunLight.shadow.mapSize.set(1536, 1536);
+sunLight.shadow.bias = -0.00008;
+sunLight.shadow.normalBias = 0.025;
 sunLight.shadow.camera.near = 1;
- sunLight.shadow.camera.far = 80;
-sunLight.shadow.camera.left = -24;
-sunLight.shadow.camera.right = 24;
-sunLight.shadow.camera.top = 24;
-sunLight.shadow.camera.bottom = -24;
+sunLight.shadow.camera.far = 72;
+sunLight.shadow.camera.left = -22;
+sunLight.shadow.camera.right = 22;
+sunLight.shadow.camera.top = 22;
+sunLight.shadow.camera.bottom = -22;
 scene.add(sunLight);
 
-const fillLight = new THREE.DirectionalLight(0x9cc4ff, 0.35);
+const fillLight = new THREE.DirectionalLight(0x9abce0, 0.16);
 fillLight.position.set(-12, 10, -24);
 scene.add(fillLight);
 
-const bounceLight = new THREE.PointLight(0xffd8c4, 0.45, 24, 2);
-bounceLight.position.set(0, 4, 0);
+const bounceLight = new THREE.PointLight(0xffc7a1, 0.2, 18, 2);
+bounceLight.position.set(0, 3.2, 0);
 scene.add(bounceLight);
+
+const rimLight = new THREE.DirectionalLight(0xb9d7ff, 0.22);
+rimLight.position.set(-18, 14, 22);
+scene.add(rimLight);
 
 const clock = new THREE.Clock();
 const moveState = {
@@ -188,6 +200,7 @@ const moveState = {
   backward: false,
   left: false,
   right: false,
+  sprint: false,
 };
 
 const cameraAnchor = new THREE.Vector3().copy(START_POSITION);
@@ -216,6 +229,9 @@ let isGrounded = true;
 let perfFrameCount = 0;
 let perfElapsed = 0;
 let perfFrameTimeMs = 0;
+let perfFpsEstimate = 60;
+let dynamicPixelRatio = MAX_RENDER_PIXEL_RATIO;
+let lastDynamicPixelRatioUpdate = 0;
 
 function formatPerfCount(value) {
   return Intl.NumberFormat("en-US", { notation: value >= 1000 ? "compact" : "standard" }).format(value);
@@ -247,6 +263,7 @@ function updatePerfHud(delta) {
   }
 
   const fps = perfFrameCount / perfElapsed;
+  perfFpsEstimate = fps;
   const info = renderer.info;
   perfElements.fps.textContent = Math.round(fps).toString();
   perfElements.ms.textContent = perfFrameTimeMs.toFixed(1);
@@ -258,6 +275,37 @@ function updatePerfHud(delta) {
 
   perfFrameCount = 0;
   perfElapsed = 0;
+}
+
+function applyRenderScale(pixelRatio) {
+  dynamicPixelRatio = pixelRatio;
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, dynamicPixelRatio));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
+  if (ENABLE_SSAO) {
+    ssaoPass.setSize(window.innerWidth, window.innerHeight);
+  }
+  if (ENABLE_BLOOM) {
+    bloomPass.setSize(window.innerWidth, window.innerHeight);
+  }
+}
+
+function updateDynamicResolution(elapsedTime) {
+  if (elapsedTime - lastDynamicPixelRatioUpdate < DYNAMIC_PIXEL_RATIO_UPDATE_INTERVAL) {
+    return;
+  }
+
+  lastDynamicPixelRatioUpdate = elapsedTime;
+  let nextPixelRatio = dynamicPixelRatio;
+  if (perfFpsEstimate < DYNAMIC_PIXEL_RATIO_LOW_FPS && dynamicPixelRatio > DYNAMIC_PIXEL_RATIO_MIN) {
+    nextPixelRatio = Math.max(DYNAMIC_PIXEL_RATIO_MIN, dynamicPixelRatio - DYNAMIC_PIXEL_RATIO_STEP);
+  } else if (perfFpsEstimate > DYNAMIC_PIXEL_RATIO_HIGH_FPS && dynamicPixelRatio < DYNAMIC_PIXEL_RATIO_MAX) {
+    nextPixelRatio = Math.min(DYNAMIC_PIXEL_RATIO_MAX, dynamicPixelRatio + DYNAMIC_PIXEL_RATIO_STEP);
+  }
+
+  if (nextPixelRatio !== dynamicPixelRatio) {
+    applyRenderScale(nextPixelRatio);
+  }
 }
 
 function setStatus(message, hidden = false) {
@@ -319,6 +367,64 @@ function isRoofLikeMaterial(material) {
     materialHsl.h > 0.22 && materialHsl.h < 0.42 && materialHsl.s > 0.3 && materialHsl.l < 0.38;
 
   return isWarmRoof || isDarkGreenRoof;
+}
+
+function getPrimaryMaterial(mesh) {
+  return Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+}
+
+function shouldCastShadow(mesh) {
+  if (!ENABLE_SHADOWS || !mesh.geometry) {
+    return false;
+  }
+
+  const material = getPrimaryMaterial(mesh);
+  if (!material || isWaterLikeMaterial(material) || material.transparent) {
+    return false;
+  }
+
+  if (!mesh.geometry.boundingBox) {
+    mesh.geometry.computeBoundingBox();
+  }
+
+  const size = mesh.geometry.boundingBox.getSize(new THREE.Vector3());
+  const name = mesh.name?.toLowerCase() ?? "";
+  const isArchitectural =
+    name.includes("wall") ||
+    name.includes("roof") ||
+    name.includes("facade") ||
+    name.includes("floor") ||
+    name.includes("building") ||
+    name.includes("bridge");
+  const footprint = size.x * size.z;
+
+  return isArchitectural || size.y > 0.45 || footprint > 0.18;
+}
+
+function shouldReceiveShadow(mesh) {
+  if (!ENABLE_SHADOWS || !mesh.geometry) {
+    return false;
+  }
+
+  const material = getPrimaryMaterial(mesh);
+  if (!material || material.transparent) {
+    return false;
+  }
+
+  if (!mesh.geometry.boundingBox) {
+    mesh.geometry.computeBoundingBox();
+  }
+
+  const size = mesh.geometry.boundingBox.getSize(new THREE.Vector3());
+  const name = mesh.name?.toLowerCase() ?? "";
+  return (
+    isWaterLikeMaterial(material) ||
+    name.includes("floor") ||
+    name.includes("ground") ||
+    name.includes("street") ||
+    name.includes("walk") ||
+    size.x * size.z > 0.12
+  );
 }
 
 function isWalkableHit(hit) {
@@ -624,6 +730,10 @@ function handleKey(event, pressed) {
     case "KeyD":
       moveState.right = pressed;
       break;
+    case "ShiftLeft":
+    case "ShiftRight":
+      moveState.sprint = pressed;
+      break;
     case "Space":
       if (pressed && isGrounded) {
         verticalVelocity = JUMP_VELOCITY;
@@ -646,6 +756,7 @@ function resetMovement() {
   moveState.backward = false;
   moveState.left = false;
   moveState.right = false;
+  moveState.sprint = false;
   verticalVelocity = 0;
 }
 
@@ -779,8 +890,8 @@ async function loadModel() {
         return;
       }
 
-      child.castShadow = ENABLE_SHADOWS;
-      child.receiveShadow = ENABLE_SHADOWS;
+      child.castShadow = shouldCastShadow(child);
+      child.receiveShadow = shouldReceiveShadow(child);
       child.frustumCulled = true;
       const materials = Array.isArray(child.material) ? child.material : [child.material];
       for (const material of materials) {
@@ -844,7 +955,7 @@ function updateMovement(delta) {
     movement.normalize();
     movement.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
 
-    const moveDistance = WALK_SPEED * delta;
+    const moveDistance = WALK_SPEED * (moveState.sprint ? SPRINT_MULTIPLIER : 1) * delta;
     const attemptedPositions = [
       cameraAnchor.clone().addScaledVector(movement, moveDistance),
       cameraAnchor.clone().addScaledVector(new THREE.Vector3(movement.x, 0, 0), moveDistance),
@@ -906,6 +1017,7 @@ function animate() {
   const delta = Math.min(clock.getDelta(), 0.05);
   const elapsedTime = clock.elapsedTime;
   updateMovement(delta);
+  updateDynamicResolution(elapsedTime);
   updateExhibitState();
 
   for (const marker of warpSpotMarkers) {
@@ -920,15 +1032,7 @@ function animate() {
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_RENDER_PIXEL_RATIO));
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  composer.setSize(window.innerWidth, window.innerHeight);
-  if (ENABLE_SSAO) {
-    ssaoPass.setSize(window.innerWidth, window.innerHeight);
-  }
-  if (ENABLE_BLOOM) {
-    bloomPass.setSize(window.innerWidth, window.innerHeight);
-  }
+  applyRenderScale(dynamicPixelRatio);
 });
 
 loadModel();
