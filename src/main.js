@@ -22,6 +22,7 @@ const JUMP_VELOCITY = 4.2;
 const GRAVITY = 12;
 const MIN_WALKABLE_HEIGHT = 0.55;
 const START_POSITION = new THREE.Vector3(0, CAMERA_HEIGHT, 8);
+const PERF_UPDATE_INTERVAL = 250;
 
 const app = document.querySelector("#app");
 
@@ -35,6 +36,25 @@ app.innerHTML = `
     <button class="overlay__button" type="button" data-enter>Enter walkthrough</button>
     <p class="overlay__note">PC only prototype. Slow movement for quiet viewing.</p>
   </div>
+  <div class="perf" aria-live="off" data-perf>
+    <div class="perf__title">Performance</div>
+    <div class="perf__grid">
+      <div class="perf__label">FPS</div>
+      <div class="perf__value" data-perf-fps>--</div>
+      <div class="perf__label">MS</div>
+      <div class="perf__value" data-perf-ms>--</div>
+      <div class="perf__label">Calls</div>
+      <div class="perf__value" data-perf-calls>--</div>
+      <div class="perf__label">Tris</div>
+      <div class="perf__value" data-perf-triangles>--</div>
+      <div class="perf__label">Geom</div>
+      <div class="perf__value" data-perf-geometries>--</div>
+      <div class="perf__label">Tex</div>
+      <div class="perf__value" data-perf-textures>--</div>
+      <div class="perf__label">Heap</div>
+      <div class="perf__value" data-perf-heap>n/a</div>
+    </div>
+  </div>
   <div class="status" data-status>Loading Venice model...</div>
 `;
 
@@ -42,6 +62,15 @@ const canvas = document.querySelector(".stage");
 const overlay = document.querySelector("[data-overlay]");
 const enterButton = document.querySelector("[data-enter]");
 const status = document.querySelector("[data-status]");
+const perfElements = {
+  fps: document.querySelector("[data-perf-fps]"),
+  ms: document.querySelector("[data-perf-ms]"),
+  calls: document.querySelector("[data-perf-calls]"),
+  triangles: document.querySelector("[data-perf-triangles]"),
+  geometries: document.querySelector("[data-perf-geometries]"),
+  textures: document.querySelector("[data-perf-textures]"),
+  heap: document.querySelector("[data-perf-heap]"),
+};
 
 const renderer = new THREE.WebGLRenderer({
   antialias: true,
@@ -155,6 +184,52 @@ let pitch = 0;
 let isPointerLocked = false;
 let verticalVelocity = 0;
 let isGrounded = true;
+let perfFrameCount = 0;
+let perfElapsed = 0;
+let perfFrameTimeMs = 0;
+
+function formatPerfCount(value) {
+  return Intl.NumberFormat("en-US", { notation: value >= 1000 ? "compact" : "standard" }).format(value);
+}
+
+function formatHeap(value) {
+  if (!Number.isFinite(value)) {
+    return "n/a";
+  }
+
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function readHeapUsage() {
+  if (!("memory" in performance) || !Number.isFinite(performance.memory?.usedJSHeapSize)) {
+    return Number.NaN;
+  }
+
+  return performance.memory.usedJSHeapSize;
+}
+
+function updatePerfHud(delta) {
+  perfFrameCount += 1;
+  perfElapsed += delta;
+  perfFrameTimeMs = delta * 1000;
+
+  if (perfElapsed < PERF_UPDATE_INTERVAL / 1000) {
+    return;
+  }
+
+  const fps = perfFrameCount / perfElapsed;
+  const info = renderer.info;
+  perfElements.fps.textContent = Math.round(fps).toString();
+  perfElements.ms.textContent = perfFrameTimeMs.toFixed(1);
+  perfElements.calls.textContent = formatPerfCount(info.render.calls);
+  perfElements.triangles.textContent = formatPerfCount(info.render.triangles);
+  perfElements.geometries.textContent = formatPerfCount(info.memory.geometries);
+  perfElements.textures.textContent = formatPerfCount(info.memory.textures);
+  perfElements.heap.textContent = formatHeap(readHeapUsage());
+
+  perfFrameCount = 0;
+  perfElapsed = 0;
+}
 
 function setStatus(message, hidden = false) {
   status.textContent = message;
@@ -519,6 +594,7 @@ function animate() {
   updateMovement(delta);
 
   composer.render();
+  updatePerfHud(delta);
 }
 
 window.addEventListener("resize", () => {

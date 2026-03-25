@@ -89,6 +89,48 @@ body {
   color: rgba(28, 26, 22, 0.76);
 }
 
+.perf {
+  position: fixed;
+  top: 20px;
+  right: 24px;
+  z-index: 2;
+  min-width: 154px;
+  padding: 10px 12px;
+  background: rgba(249, 245, 239, 0.72);
+  border: 1px solid rgba(31, 29, 24, 0.12);
+  backdrop-filter: blur(10px);
+  color: rgba(24, 22, 18, 0.84);
+  pointer-events: none;
+}
+
+.perf__title {
+  margin-bottom: 8px;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.perf__grid {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 4px 12px;
+  align-items: baseline;
+}
+
+.perf__label,
+.perf__value {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.perf__label {
+  color: rgba(24, 22, 18, 0.58);
+}
+
+.perf__value {
+  justify-self: end;
+}
+
 .status {
   position: fixed;
   right: 24px;
