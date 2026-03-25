@@ -39,7 +39,9 @@ export const WARP_SPOT_DEFS = [
 export const POI_DEFS = [
   {
     id: "bridge-01",
-    title: "Stone Bridge",
+    number: "bridge-01",
+    name: "Stone Bridge",
+    owner: "未設定",
     hint: "橋の構成を見る",
     description:
       "橋のアーチ、手すり、両岸との接続がこの作品の空間の芯になっています。将来的にはここに実物写真や制作メモを表示できます。",
@@ -49,7 +51,9 @@ export const POI_DEFS = [
   },
   {
     id: "canal-house-01",
-    title: "Canal House",
+    number: "canal-house-01",
+    name: "Canal House",
+    owner: "未設定",
     hint: "建物の立面を見る",
     description:
       "運河沿いの建物ファサードを観察するための対象です。窓やベランダの情報を追加すれば、上階ビューポイントと強く連携できます。",
@@ -59,7 +63,9 @@ export const POI_DEFS = [
   },
   {
     id: "tower-01",
-    title: "Bell Tower",
+    number: "tower-01",
+    name: "Bell Tower",
+    owner: "未設定",
     hint: "塔を見る",
     description:
       "遠景で世界観を締めるランドマーク想定です。作品元ネタの建物情報や実在写真を重ねるなら、ここが代表的な POI になります。",

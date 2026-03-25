@@ -7,6 +7,7 @@ import { SSAOPass } from "three/examples/jsm/postprocessing/SSAOPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { Sky } from "three/examples/jsm/objects/Sky.js";
+import { COLLISION_EXHIBIT_DEFS } from "./collision-exhibits.js";
 import { POI_DEFS, WARP_SPOT_DEFS } from "./exhibit-points.js";
 
 const CAMERA_HEIGHT = 2;
@@ -29,7 +30,6 @@ const ENABLE_BLOOM = false;
 const ENABLE_SHADOWS = true;
 const PLAYER_RADIUS = 0.32;
 const PLAYER_COLLISION_HEIGHT = 1.2;
-const PERF_UPDATE_INTERVAL = 250;
 const DYNAMIC_PIXEL_RATIO_MIN = 0.7;
 const DYNAMIC_PIXEL_RATIO_MAX = MAX_RENDER_PIXEL_RATIO;
 const DYNAMIC_PIXEL_RATIO_STEP = 0.1;
@@ -48,32 +48,22 @@ app.innerHTML = `
   <div class="reticle" aria-hidden="true"></div>
   <div class="focus-hint" data-focus-hint></div>
   <div class="info-panel" data-info-panel aria-live="polite">
-    <div class="info-panel__eyebrow" data-info-context></div>
-    <h2 class="info-panel__title" data-info-title></h2>
-    <p class="info-panel__body" data-info-body></p>
+    <div class="info-panel__meta">
+      <div class="info-panel__meta-row">
+        <span class="info-panel__meta-label">建物番号</span>
+        <span class="info-panel__meta-value" data-info-number></span>
+      </div>
+      <div class="info-panel__meta-row">
+        <span class="info-panel__meta-label">担当者</span>
+        <span class="info-panel__meta-value" data-info-owner></span>
+      </div>
+    </div>
+    <h2 class="info-panel__title" data-info-name></h2>
+    <p class="info-panel__body" data-info-description></p>
   </div>
   <div class="overlay overlay--active" data-overlay>
     <button class="overlay__button" type="button" data-enter>Enter walkthrough</button>
     <p class="overlay__note">PC only prototype. Move at minifigure scale and find a few quiet viewpoints.</p>
-  </div>
-  <div class="perf" aria-live="off" data-perf>
-    <div class="perf__title">Performance</div>
-    <div class="perf__grid">
-      <div class="perf__label">FPS</div>
-      <div class="perf__value" data-perf-fps>--</div>
-      <div class="perf__label">MS</div>
-      <div class="perf__value" data-perf-ms>--</div>
-      <div class="perf__label">Calls</div>
-      <div class="perf__value" data-perf-calls>--</div>
-      <div class="perf__label">Tris</div>
-      <div class="perf__value" data-perf-triangles>--</div>
-      <div class="perf__label">Geom</div>
-      <div class="perf__value" data-perf-geometries>--</div>
-      <div class="perf__label">Tex</div>
-      <div class="perf__value" data-perf-textures>--</div>
-      <div class="perf__label">Heap</div>
-      <div class="perf__value" data-perf-heap>n/a</div>
-    </div>
   </div>
   <div class="status" data-status>Loading Venice model...</div>
 `;
@@ -84,18 +74,10 @@ const enterButton = document.querySelector("[data-enter]");
 const status = document.querySelector("[data-status]");
 const focusHint = document.querySelector("[data-focus-hint]");
 const infoPanel = document.querySelector("[data-info-panel]");
-const infoContext = document.querySelector("[data-info-context]");
-const infoTitle = document.querySelector("[data-info-title]");
-const infoBody = document.querySelector("[data-info-body]");
-const perfElements = {
-  fps: document.querySelector("[data-perf-fps]"),
-  ms: document.querySelector("[data-perf-ms]"),
-  calls: document.querySelector("[data-perf-calls]"),
-  triangles: document.querySelector("[data-perf-triangles]"),
-  geometries: document.querySelector("[data-perf-geometries]"),
-  textures: document.querySelector("[data-perf-textures]"),
-  heap: document.querySelector("[data-perf-heap]"),
-};
+const infoNumber = document.querySelector("[data-info-number]");
+const infoOwner = document.querySelector("[data-info-owner]");
+const infoName = document.querySelector("[data-info-name]");
+const infoDescription = document.querySelector("[data-info-description]");
 
 const renderer = new THREE.WebGLRenderer({
   antialias: true,
@@ -206,11 +188,14 @@ const moveState = {
 const cameraAnchor = new THREE.Vector3().copy(START_POSITION);
 const movement = new THREE.Vector3();
 const raycaster = new THREE.Raycaster();
+const lookRay = new THREE.Raycaster();
 const down = new THREE.Vector3(0, -1, 0);
 const surfaceProbe = new THREE.Vector3();
+const screenCenter = new THREE.Vector2(0, 0);
 const materialHsl = { h: 0, s: 0, l: 0 };
 let modelRoot;
 let collisionRoot;
+let exhibitMeshes = [];
 let walkableMeshes = [];
 let wallMeshes = [];
 let runtimePois = [];
@@ -226,56 +211,9 @@ let pitch = 0;
 let isPointerLocked = false;
 let verticalVelocity = 0;
 let isGrounded = true;
-let perfFrameCount = 0;
-let perfElapsed = 0;
-let perfFrameTimeMs = 0;
 let perfFpsEstimate = 60;
 let dynamicPixelRatio = MAX_RENDER_PIXEL_RATIO;
 let lastDynamicPixelRatioUpdate = 0;
-
-function formatPerfCount(value) {
-  return Intl.NumberFormat("en-US", { notation: value >= 1000 ? "compact" : "standard" }).format(value);
-}
-
-function formatHeap(value) {
-  if (!Number.isFinite(value)) {
-    return "n/a";
-  }
-
-  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function readHeapUsage() {
-  if (!("memory" in performance) || !Number.isFinite(performance.memory?.usedJSHeapSize)) {
-    return Number.NaN;
-  }
-
-  return performance.memory.usedJSHeapSize;
-}
-
-function updatePerfHud(delta) {
-  perfFrameCount += 1;
-  perfElapsed += delta;
-  perfFrameTimeMs = delta * 1000;
-
-  if (perfElapsed < PERF_UPDATE_INTERVAL / 1000) {
-    return;
-  }
-
-  const fps = perfFrameCount / perfElapsed;
-  perfFpsEstimate = fps;
-  const info = renderer.info;
-  perfElements.fps.textContent = Math.round(fps).toString();
-  perfElements.ms.textContent = perfFrameTimeMs.toFixed(1);
-  perfElements.calls.textContent = formatPerfCount(info.render.calls);
-  perfElements.triangles.textContent = formatPerfCount(info.render.triangles);
-  perfElements.geometries.textContent = formatPerfCount(info.memory.geometries);
-  perfElements.textures.textContent = formatPerfCount(info.memory.textures);
-  perfElements.heap.textContent = formatHeap(readHeapUsage());
-
-  perfFrameCount = 0;
-  perfElapsed = 0;
-}
 
 function applyRenderScale(pixelRatio) {
   dynamicPixelRatio = pixelRatio;
@@ -322,20 +260,90 @@ function setFocusHint(message = "", visible = false) {
   focusHint.classList.toggle("focus-hint--visible", visible);
 }
 
+function formatCollisionLabel(name) {
+  return name
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function extractCollisionNumber(name) {
+  const match = name.match(/(\d+)$/);
+  return match ? match[1] : name;
+}
+
+function isExhibitCollisionName(name) {
+  const normalizedName = name.toLowerCase();
+  return (
+    normalizedName.startsWith("wall_") ||
+    normalizedName.includes("bridge") ||
+    normalizedName.includes("gondola") ||
+    normalizedName.includes("boat")
+  );
+}
+
+function createCollisionExhibitInfo(name) {
+  const authoredDef = COLLISION_EXHIBIT_DEFS[name];
+  if (authoredDef) {
+    return {
+      id: name,
+      hint: "対象の案内を表示中",
+      ...authoredDef,
+    };
+  }
+
+  const normalizedName = name.toLowerCase();
+  const baseInfo = {
+    id: name,
+    number: extractCollisionNumber(name),
+    name: formatCollisionLabel(name),
+    owner: "未設定",
+    hint: "対象の案内を表示中",
+    description: `Blender 側のコリジョンボックス \`${name}\` にカーソルが重なっています。ここへ建物名、橋の由来、写真、制作メモを紐づけていく想定です。`,
+  };
+
+  if (normalizedName.startsWith("wall_")) {
+    return {
+      ...baseInfo,
+      name: `建物 ${name.replace(/^wall_/i, "")}`,
+      description: `コリジョン名 \`${name}\` の建物ボックスです。ここに建物名、実在モチーフ、外観写真、ファサードの見どころを追加していく想定です。`,
+    };
+  }
+
+  if (normalizedName.includes("bridge")) {
+    return {
+      ...baseInfo,
+      name: `橋 ${name.replace(/^.*bridge_?/i, "").toUpperCase() || ""}`.trim(),
+      description: `コリジョン名 \`${name}\` の橋ボックスです。橋の名称、接続している街区、構造の見どころ、実物写真を表示する対象として使えます。`,
+    };
+  }
+
+  if (normalizedName.includes("gondola") || normalizedName.includes("boat")) {
+    return {
+      ...baseInfo,
+      title: formatCollisionLabel(name),
+      description: `コリジョン名 \`${name}\` の船体ボックスです。ゴンドラや小舟の説明、役割、写真、ディテール解説を出す対象として使えます。`,
+    };
+  }
+
+  return baseInfo;
+}
+
 function renderInfoPanel() {
   const sourcePoi = focusedPoi;
   infoPanel.classList.toggle("info-panel--visible", Boolean(sourcePoi));
 
   if (!sourcePoi) {
-    infoContext.textContent = "";
-    infoTitle.textContent = "";
-    infoBody.textContent = "";
+    infoNumber.textContent = "";
+    infoOwner.textContent = "";
+    infoName.textContent = "";
+    infoDescription.textContent = "";
     return;
   }
 
-  infoContext.textContent = "Point of interest";
-  infoTitle.textContent = sourcePoi.title;
-  infoBody.textContent = sourcePoi.description;
+  infoNumber.textContent = sourcePoi.number ?? sourcePoi.id ?? "未設定";
+  infoOwner.textContent = sourcePoi.owner ?? "未設定";
+  infoName.textContent = sourcePoi.name ?? sourcePoi.title;
+  infoDescription.textContent = sourcePoi.description;
 }
 
 function syncCameraTransform() {
@@ -574,23 +582,32 @@ function updateExhibitState() {
     return;
   }
 
+  let nextFocusedPoi = null;
+  lookRay.setFromCamera(screenCenter, camera);
+  lookRay.far = 42;
+  const targetHit = lookRay.intersectObjects(exhibitMeshes, false)[0];
+  if (targetHit?.object?.userData?.exhibitInfo) {
+    nextFocusedPoi = targetHit.object.userData.exhibitInfo;
+  }
+
   const forward = new THREE.Vector3();
   camera.getWorldDirection(forward);
 
-  let nextFocusedPoi = null;
-  let bestPoiScore = 0.86;
-  for (const poi of runtimePois) {
-    const offset = poi.position.clone().sub(camera.position);
-    const distance = offset.length();
-    if (distance > 34) {
-      continue;
-    }
+  if (!nextFocusedPoi) {
+    let bestPoiScore = 0.86;
+    for (const poi of runtimePois) {
+      const offset = poi.position.clone().sub(camera.position);
+      const distance = offset.length();
+      if (distance > 34) {
+        continue;
+      }
 
-    const directionToPoi = offset.normalize();
-    const score = forward.dot(directionToPoi);
-    if (score > bestPoiScore) {
-      nextFocusedPoi = poi;
-      bestPoiScore = score;
+      const directionToPoi = offset.normalize();
+      const score = forward.dot(directionToPoi);
+      if (score > bestPoiScore) {
+        nextFocusedPoi = poi;
+        bestPoiScore = score;
+      }
     }
   }
   focusedPoi = nextFocusedPoi;
@@ -614,7 +631,9 @@ function updateExhibitState() {
   }
   activeWarpSpot = nextWarpSpot;
 
-  if (activeWarpSpot) {
+  if (focusedPoi?.hint) {
+    setFocusHint(focusedPoi.hint, true);
+  } else if (activeWarpSpot) {
     setFocusHint(activeWarpSpot.hint, true);
   } else {
     setFocusHint();
@@ -883,6 +902,7 @@ async function loadModel() {
     modelRoot = visualGltf.scene;
     collisionRoot = collisionGltf.scene;
 
+    exhibitMeshes = [];
     walkableMeshes = [];
     wallMeshes = [];
     modelRoot.traverse((child) => {
@@ -916,6 +936,10 @@ async function loadModel() {
       }
 
       const normalizedName = child.name?.toLowerCase() ?? "";
+      if (isExhibitCollisionName(normalizedName)) {
+        child.userData.exhibitInfo = createCollisionExhibitInfo(child.name);
+        exhibitMeshes.push(child);
+      }
       if (normalizedName.startsWith("walk_")) {
         child.userData.surfaceType = "walk";
         walkableMeshes.push(child);
@@ -1016,6 +1040,7 @@ function animate() {
 
   const delta = Math.min(clock.getDelta(), 0.05);
   const elapsedTime = clock.elapsedTime;
+  perfFpsEstimate = delta > 0 ? 1 / delta : perfFpsEstimate;
   updateMovement(delta);
   updateDynamicResolution(elapsedTime);
   updateExhibitState();
@@ -1026,7 +1051,6 @@ function animate() {
   }
 
   composer.render();
-  updatePerfHud(delta);
 }
 
 window.addEventListener("resize", () => {
